@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Emergencia Perú — Ubicación en tiempo real</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #0f0f0f;
+      color: #fff;
+      height: 100dvh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    #header {
+      padding: 12px 16px;
+      background: #B5374E;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-shrink: 0;
+    }
+    #header-icon { font-size: 24px; }
+    #header-title { font-size: 15px; font-weight: 700; line-height: 1.2; }
+    #header-sub { font-size: 12px; opacity: 0.8; margin-top: 2px; }
+
+    #status-bar {
+      padding: 7px 16px;
+      background: #1a1a1a;
+      border-bottom: 1px solid #2a2a2a;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-shrink: 0;
+      gap: 8px;
+    }
+    #address { font-size: 12px; color: #ccc; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    #pulse { width: 8px; height: 8px; border-radius: 50%; background: #22c55e; flex-shrink: 0; animation: pulse 1.5s infinite; }
+    #last-update { font-size: 11px; color: #888; flex-shrink: 0; }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50%       { opacity: 0.4; transform: scale(0.8); }
+    }
+
+    #map { flex: 1; z-index: 1; }
+
+    /* Expired overlay */
+    #expired {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.92);
+      align-items: center;
+      justify-content: center;
+      flex-direction: column;
+      gap: 12px;
+      z-index: 1000;
+      padding: 32px;
+      text-align: center;
+    }
+    #expired-icon { font-size: 48px; }
+    #expired h2 { font-size: 20px; font-weight: 700; }
+    #expired p { color: #aaa; font-size: 14px; line-height: 1.5; }
+
+    /* Error overlay */
+    #error {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.92);
+      align-items: center;
+      justify-content: center;
+      flex-direction: column;
+      gap: 12px;
+      z-index: 1000;
+      padding: 32px;
+      text-align: center;
+    }
+    #error h2 { font-size: 18px; font-weight: 700; }
+    #error p { color: #aaa; font-size: 13px; }
+  </style>
+</head>
+<body>
+
+  <div id="header">
+    <div id="header-icon">🆘</div>
+    <div>
+      <div id="header-title">Cargando...</div>
+      <div id="header-sub">Emergencia Perú · Ubicación en tiempo real</div>
+    </div>
+  </div>
+
+  <div id="status-bar">
+    <span id="address">Obteniendo ubicación…</span>
+    <div id="pulse"></div>
+    <span id="last-update">--</span>
+  </div>
+
+  <div id="map"></div>
+
+  <div id="expired">
+    <div id="expired-icon">⏱️</div>
+    <h2>Sesión finalizada</h2>
+    <p>La sesión de ubicación en tiempo real ha expirado o fue cerrada por el usuario.</p>
+  </div>
+
+  <div id="error">
+    <div style="font-size:48px">⚠️</div>
+    <h2>Sesión no encontrada</h2>
+    <p>El enlace puede estar mal formado o la sesión no existe.</p>
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+
+  <script>
+    // ── Config ──────────────────────────────────────────────────────────────
+    const SUPABASE_URL = 'https://psfxxbgtubpjjewqlagq.supabase.co';
+    const SUPABASE_KEY = 'sb_publishable_iQcERrF7uQseXz0paOAEQw_vSRI6wRz';
+
+    // ── Init ────────────────────────────────────────────────────────────────
+    const params    = new URLSearchParams(window.location.search);
+    const sessionId = params.get('s');
+    const sb        = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+    if (!sessionId) {
+      document.getElementById('error').style.display = 'flex';
+    }
+
+    // ── Map setup ───────────────────────────────────────────────────────────
+    const map = L.map('map', { zoomControl: true });
+
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '© <a href="https://openstreetmap.org">OpenStreetMap</a>',
+      maxZoom: 19,
+    }).addTo(map);
+
+    // Custom red dot marker
+    const markerIcon = L.divIcon({
+      html: `
+        <div style="
+          width:22px; height:22px; border-radius:50%;
+          background:#B5374E; border:3px solid #fff;
+          box-shadow:0 2px 12px rgba(181,55,78,0.6);
+          position:relative;
+        ">
+          <div style="
+            position:absolute; top:50%; left:50%;
+            transform:translate(-50%,-50%);
+            width:8px; height:8px; border-radius:50%;
+            background:rgba(255,255,255,0.7);
+          "></div>
+        </div>`,
+      iconSize:   [22, 22],
+      iconAnchor: [11, 11],
+      className:  '',
+    });
+
+    let marker    = null;
+    let firstView = true;
+
+    // ── UI helpers ──────────────────────────────────────────────────────────
+    function showExpired() {
+      document.getElementById('expired').style.display = 'flex';
+      document.getElementById('pulse').style.background = '#ef4444';
+      document.getElementById('pulse').style.animation = 'none';
+    }
+
+    function updateUI(data) {
+      // Header name
+      document.getElementById('header-title').textContent =
+        (data.name || 'Usuario') + ' — Ubicación activa';
+
+      // Last update time
+      if (data.updated_at) {
+        const d = new Date(data.updated_at);
+        document.getElementById('last-update').textContent =
+          d.toLocaleTimeString('es-PE', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+      }
+
+      // Address via reverse geocoding (best-effort, non-blocking)
+      reverseGeocode(data.latitude, data.longitude);
+
+      // Map marker
+      const latlng = [data.latitude, data.longitude];
+      if (marker) {
+        marker.setLatLng(latlng);
+      } else {
+        marker = L.marker(latlng, { icon: markerIcon }).addTo(map);
+      }
+
+      if (firstView) {
+        map.setView(latlng, 17);
+        firstView = false;
+      } else {
+        map.panTo(latlng, { animate: true, duration: 1 });
+      }
+    }
+
+    async function reverseGeocode(lat, lng) {
+      try {
+        const res = await fetch(
+          `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}&format=json`,
+          { headers: { 'Accept-Language': 'es' } }
+        );
+        const json = await res.json();
+        const addr = json.address;
+        const parts = [
+          addr.road || addr.pedestrian || addr.suburb,
+          addr.city || addr.town || addr.village || addr.state,
+        ].filter(Boolean);
+        document.getElementById('address').textContent =
+          parts.length ? parts.join(', ') : `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
+      } catch {
+        document.getElementById('address').textContent =
+          `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
+      }
+    }
+
+    function isExpired(data) {
+      return !data.active || new Date(data.expires_at) <= new Date();
+    }
+
+    // ── Load and subscribe ───────────────────────────────────────────────────
+    async function init() {
+      if (!sessionId) return;
+
+      // Fetch initial data
+      const { data, error } = await sb
+        .from('live_sessions')
+        .select('*')
+        .eq('id', sessionId)
+        .single();
+
+      if (error || !data) {
+        document.getElementById('error').style.display = 'flex';
+        return;
+      }
+
+      if (isExpired(data)) {
+        showExpired();
+        return;
+      }
+
+      updateUI(data);
+
+      // Subscribe to realtime coordinate updates
+      sb.channel('live_' + sessionId)
+        .on('postgres_changes', {
+          event:  'UPDATE',
+          schema: 'public',
+          table:  'live_sessions',
+          filter: `id=eq.${sessionId}`,
+        }, (payload) => {
+          const d = payload.new;
+          if (isExpired(d)) {
+            showExpired();
+            return;
+          }
+          updateUI(d);
+        })
+        .subscribe();
+    }
+
+    init();
+  </script>
+</body>
+</html>
