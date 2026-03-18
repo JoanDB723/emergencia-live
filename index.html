@@ -229,6 +229,30 @@
     }
 
     // ── Load and subscribe ───────────────────────────────────────────────────
+    let _lastUpdatedAt = null;
+    let _pollInterval  = null;
+    let _expired       = false;
+
+    async function fetchLatest() {
+      if (_expired) return;
+      const { data } = await sb
+        .from('live_sessions')
+        .select('*')
+        .eq('id', sessionId)
+        .single();
+      if (!data) return;
+      if (isExpired(data)) {
+        _expired = true;
+        showExpired();
+        if (_pollInterval) clearInterval(_pollInterval);
+        return;
+      }
+      if (data.updated_at !== _lastUpdatedAt) {
+        _lastUpdatedAt = data.updated_at;
+        updateUI(data);
+      }
+    }
+
     async function init() {
       if (!sessionId) return;
 
@@ -249,9 +273,10 @@
         return;
       }
 
+      _lastUpdatedAt = data.updated_at;
       updateUI(data);
 
-      // Subscribe to realtime coordinate updates
+      // Primary: Realtime subscription for instant updates
       sb.channel('live_' + sessionId)
         .on('postgres_changes', {
           event:  'UPDATE',
@@ -261,12 +286,18 @@
         }, (payload) => {
           const d = payload.new;
           if (isExpired(d)) {
+            _expired = true;
             showExpired();
+            if (_pollInterval) clearInterval(_pollInterval);
             return;
           }
+          _lastUpdatedAt = d.updated_at;
           updateUI(d);
         })
         .subscribe();
+
+      // Fallback: poll every 5 s in case Realtime misses an update
+      _pollInterval = setInterval(fetchLatest, 5000);
     }
 
     init();
