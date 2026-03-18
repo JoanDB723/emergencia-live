@@ -277,14 +277,16 @@
       updateUI(data);
 
       // Primary: Realtime subscription for instant updates
+      // Note: filter is NOT used here because it requires REPLICA IDENTITY FULL.
+      // Instead we check the session ID in the callback.
       sb.channel('live_' + sessionId)
         .on('postgres_changes', {
           event:  'UPDATE',
           schema: 'public',
           table:  'live_sessions',
-          filter: `id=eq.${sessionId}`,
         }, (payload) => {
           const d = payload.new;
+          if (!d || d.id !== sessionId) return;
           if (isExpired(d)) {
             _expired = true;
             showExpired();
